@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""
+Phase 2 — HC-SR04 Closed Loop Height Control
+=============================================
+Two-mode architecture:
+  Scanning mode  — arm moves along y-axis with pitch locked at 1.5708
+  Correction mode — arm stops, full pose command corrects height, resumes
+
+Trigger threshold : 1.5cm error triggers correction mode
+Confirm threshold : 0.8cm error over 5 samples confirms correction needed
+Full correction   : complete error corrected in one move (no cap)
+
+Robot  : locobot_wx250s
+Sensor : HC-SR04 via Arduino Uno on /dev/ttyACM0
+ROS    : Noetic
+"""
+
+from interbotix_xs_modules.locobot import InterbotixLocobotXS
+import serial
+import time
+import math
+
+# ── CONFIG ───────────────────────────────────────────────────────────────────
+PORT                  = '/dev/ttyACM0'
+BAUD                  = 9600
+TARGET_CM             = 20.0        # target standoff distance (cm)
+TRIGGER_THRESHOLD_CM  = 1.5         # error that triggers correction mode
+CONFIRM_THRESHOLD_CM  = 0.8         # error that confirms correction needed
+CONFIRM_SAMPLES       = 5           # number of samples to confirm
+PITCH_DOWN            = math.pi / 2 # 1.5708 — probe pointing straight down
+X_POS                 = 0.30
+Z_START               = 0.25
+Y_START               = -0.10
+Y_END                 = 0.10
+Y_STEP                = 0.01        # 1cm steps along y
+MOVE_TIME             = 0.5         # time per step (s)
+CORRECT_TIME          = 2.0         # time for correction move (s)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_distance(ser, samples=5):
+    """Read median of multiple samples for stability."""
+    readings = []
+    for _ in range(samples):
+        try:
+            line = ser.readline().decode().strip()
+            if line:
+                # Handle both plain distance and TOF:x,DIST:y formats
+                if 'DIST:' in line:
+                    dist_part = [p for p in line.split(',') if 'DIST:' in p][0]
+                    val = float(dist_part.replace('DIST:', ''))
+                else:
+                    val = float(line)
+                if 2.0 < val < 400.0:
+                    readings.append(val)
+        except (ValueError, UnicodeDecodeError):
+            pass
+    if not readings:
+        return None
+    readings.sort()
+    return readings[len(readings) // 2]
+
+def confirm_correction_needed(ser, threshold_cm, samples):
+    """Take multiple readings to confirm error is real not noise."""
+    errors = []
+    for _ in range(samples):
+        dist = get_distance(ser, samples=3)
+        if dist:
+            errors.append(abs(dist - TARGET_CM))
+        time.sleep(0.05)
+    if not errors:
+        return False
+    return (sum(errors) / len(errors)) > threshold_cm
+
+def compute_correction(dist_cm):
+    """Full correction — move exactly the error distance."""
+    error_cm = dist_cm - TARGET_CM
+    return -error_cm * 0.01  # cm to meters, sign: positive error = move down
+
+def main():
+    print("=" * 55)
+    print("PHASE 2 — HC-SR04 HEIGHT CONTROL")
+    print(f"Target distance    : {TARGET_CM} cm")
+    print(f"Trigger threshold  : ±{TRIGGER_THRESHOLD_CM} cm")
+    print(f"Confirm threshold  : ±{CONFIRM_THRESHOLD_CM} cm over {CONFIRM_SAMPLES} samples")
+    print(f"Y range            : {Y_START} to {Y_END} in {Y_STEP}m steps")
+    print("=" * 55)
+
+    # Init arm
+    bot = InterbotixLocobotXS(robot_model='locobot_wx250s', arm_model='wx250s')
+
+    # Init sensor
+    ser = serial.Serial(PORT, BAUD, timeout=1)
+    time.sleep(2)
+
+    # Confirm sensor live
+    test_dist = get_distance(ser)
+    if test_dist is None:
+        print("ERROR — no sensor readings. Check Arduino connection.")
+        ser.close()
+        return
+    print(f"\nSensor OK — reading {test_dist:.2f} cm")
+
+    input("\nPress Enter to start — arm will move...")
+
+    # ── START POSITION ────────────────────────────────────────────────────────
+    print("\n[1] Going to home pose...")
+    bot.arm.go_to_home_pose(moving_time=3.0)
+    time.sleep(1)
+
+    print(f"[2] Moving to scan start (x={X_POS}, y={Y_START}, z={Z_START})...")
+    bot.arm.set_ee_pose_components(
+        x=X_POS,
+        y=Y_START,
+        z=Z_START,
+        pitch=PITCH_DOWN,
+        moving_time=4.0
+    )
+    time.sleep(2)
+
+    # Initial height correction
+    print("[3] Initial height correction...")
+    dist = get_distance(ser)
+    if dist:
+        error_cm = dist - TARGET_CM
+        if abs(error_cm) > TRIGGER_THRESHOLD_CM:
+            dz = compute_correction(dist)
+            direction = "DOWN ↓" if dz < 0 else "UP ↑"
+            print(f"  Correcting {direction} by {abs(error_cm):.2f}cm before scan...")
+            bot.arm.set_ee_pose_components(
+                x=X_POS,
+                y=Y_START,
+                z=Z_START + dz,
+                pitch=PITCH_DOWN,
+                moving_time=CORRECT_TIME
+            )
+            time.sleep(CORRECT_TIME + 0.3)
+            Z_START_corrected = Z_START + dz
+        else:
+            Z_START_corrected = Z_START
+    else:
+        Z_START_corrected = Z_START
+
+    # ── MAIN SCAN LOOP ────────────────────────────────────────────────────────
+    current_y = Y_START
+    current_z = Z_START_corrected
+    step_num  = 0
+    corrections = 0
+
+    total_steps = int(round((Y_END - Y_START) / Y_STEP))
+    print(f"\n[4] Starting scan — {total_steps} steps of {Y_STEP*100:.0f}cm\n")
+
+    while current_y < Y_END - 0.001:
+        step_num += 1
+        next_y = min(current_y + Y_STEP, Y_END)
+        dy = next_y - current_y
+
+        # ── SCANNING MODE — pitch locked, move along y ────────────────────
+        bot.arm.set_ee_cartesian_trajectory(y=dy, moving_time=MOVE_TIME)
+        time.sleep(MOVE_TIME + 0.2)
+        current_y = next_y
+
+        # Read sensor
+        dist = get_distance(ser)
+        if dist is None:
+            print(f"  step {step_num:>3} | y={current_y:+.3f} | ⚠ no reading")
+            continue
+
+        error_cm = dist - TARGET_CM
+        print(f"  step {step_num:>3} | y={current_y:+.3f} | {dist:.2f}cm | error={error_cm:+.2f}cm", end='')
+
+        # Check trigger threshold
+        if abs(error_cm) <= TRIGGER_THRESHOLD_CM:
+            print(" | ✅ ok")
+            continue
+
+        # ── CORRECTION MODE — confirm then correct ────────────────────────
+        print(f" | ⚠ checking...")
+        if not confirm_correction_needed(ser, CONFIRM_THRESHOLD_CM, CONFIRM_SAMPLES):
+            print(f"  step {step_num:>3} | confirmed noise — no correction")
+            continue
+
+        corrections += 1
+        dz = compute_correction(dist)
+        current_z = current_z + dz
+        direction = "DOWN ↓" if dz < 0 else "UP ↑"
+        print(f"  step {step_num:>3} | CORRECTING {direction} {abs(error_cm):.2f}cm — full pose command")
+
+        # Full pose command with pitch explicitly locked
+        bot.arm.set_ee_pose_components(
+            x=X_POS,
+            y=current_y,
+            z=current_z,
+            pitch=PITCH_DOWN,
+            moving_time=CORRECT_TIME
+        )
+        time.sleep(CORRECT_TIME + 0.3)
+
+        # Verify
+        dist_after = get_distance(ser)
+        if dist_after:
+            print(f"         after : {dist_after:.2f}cm (error {dist_after - TARGET_CM:+.2f}cm)")
+
+    # ── DONE ──────────────────────────────────────────────────────────────────
+    print(f"\n[5] Scan complete")
+    print(f"    Total steps  : {step_num}")
+    print(f"    Corrections  : {corrections}")
+    if step_num > 0:
+        print(f"    Correction rate: {100*corrections/step_num:.1f}%")
+
+    ser.close()
+    bot.arm.go_to_sleep_pose(moving_time=3.0)
+    print("Done.")
+
+if __name__ == '__main__':
+    main()
