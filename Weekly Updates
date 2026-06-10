@@ -1,12 +1,79 @@
-# Weekly Log
+# Weekly Progress Log
 
-## Week 1 — May 25 2026
-### Accomplished
-- Repository created
-- [Add as you go]
+---
 
-### Next Week Goals
-- [Add as you go]
+## Week 1 — 25th May to 2nd June
 
-### Blockers
-- None currently
+### Goals
+- Establish ROS connection to LoCoBot
+- Validate basic arm control via Interbotix SDK
+
+### Completed
+- Fixed ROS network configuration (ROS_IP mismatch between 35.12.212.139 and 35.12.212.57)
+- Identified correct SDK class: `InterbotixLocobotXS` with `arm_model='wx250s'` required
+- Confirmed `bot.arm.go_to_home_pose()` and `bot.arm.go_to_sleep_pose()` working
+- Confirmed `set_ee_pose_components()` and `set_ee_cartesian_trajectory()` working
+
+### Issues Encountered
+- `wrist_rotate` motor had hardware error flag (red flashing LED) — fixed by reboot via SDK
+- `load_configs:=true` caused EEPROM write failure on elbow motor — fixed with `load_configs:=false`
+- `roll` parameter in `set_ee_pose_components` had no effect at `pitch=π/2` due to gimbal lock singularity
+- `forearm_roll` direct joint control identified as correct approach for tilt correction
+- Phase 2 height correction unstable due to: sensor hand-held, pitch drift during corrections, motor vibration corrupting readings
+
+### Hardware Event
+- Arm over-extended during testing, lifted base, home position shifted
+- 20V adapter removed while powered — spark occurred on connector
+- All Dynamixel motors lost power — confirmed as hardware fault
+- Direct SDK ping at all baudrates returned no response on all motor IDs
+- Camera and computer unaffected (separate 12V circuit)
+- Technician inspection scheduled June 9th
+
+### Next Steps
+- Resolve hardware power fault
+- Mount HC-SR04 rigidly to gripper
+- Test improved Phase 2 architecture on hardware
+- Write and test TOF Arduino code
+- Record all Phase 1 videos for documentation
+
+---
+
+## Week 2 — 2nd June to 9th June
+
+### Goals
+- Run Phase 1 straight line path test
+- Run Phase 2 straight line path test
+
+### Completed
+- Mapped full workspace — all positions reachable at x=0.2–0.4, y=±0.2, z=0.1–0.3 with pitch=π/2
+- Explored all 6 joints individually — identified `forearm_roll` as key joint for perpendicularity
+- Confirmed `pitch=1.5708` points probe straight down throughout path
+- Confirmed `set_ee_cartesian_trajectory(z=value)` is relative not absolute
+- Phase 1 complete — straight line at constant height with probe pointing down ✅
+- HC-SR04 serial integration confirmed — clean stable readings at ~6.77cm
+- Phase 2 control loop written and partially tested
+
+### Issues Encountered
+- Hardware issues presisted
+
+### Next Steps
+- Figure out the hardware issues, likely to be a fuse, or a damaged/loose wires
+
+---
+
+## Week 3 — 9th to 16th June
+
+### Goals
+- Try disagnose and fix the issue
+- Figure out how to optimise the TOF code for the arduino
+
+### Completed
+- 
+
+### Issues Encountered
+- Hardware issues presisted
+
+### Next Steps
+- Figure out the hardware issues, likely to be a fuse, or a damaged/loose wires
+
+---
