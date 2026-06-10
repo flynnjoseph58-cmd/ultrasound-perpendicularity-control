@@ -1,0 +1,197 @@
+# TOF Characterisation Notes — HC-SR04
+
+**Status:** In Progress 🔄  
+**Date:** [FILL IN DATE]  
+**Hardware:** HC-SR04 + Arduino Uno  
+**Purpose:** Validate TOF signal as perpendicularity indicator before arm integration
+
+---
+
+## Objective
+
+Characterise the relationship between probe angle and echo pulse width (TOF) on the HC-SR04 sensor. This validates the core signal theory before integrating into the full arm control system.
+
+**Core hypothesis:**
+- Minimum TOF = probe perpendicular to surface
+- Increasing TOF = probe increasingly angled
+- TOF and amplitude together = reliable perpendicularity indicator
+
+---
+
+## Setup
+
+```
+Arduino Uno
+  ├── Pin 9  → HC-SR04 TRIG
+  ├── Pin 10 → HC-SR04 ECHO
+  ├── 5V     → HC-SR04 VCC
+  └── GND    → HC-SR04 GND
+
+Serial output: /dev/ttyACM0 @ 9600 baud
+Format: TOF:1170.0,DIST:20.0
+```
+
+**Surface used:** [FILL IN — e.g. flat wooden board, metal plate]  
+**Standoff distance:** [FILL IN — e.g. 20cm fixed]  
+**Room temperature:** [FILL IN — affects speed of sound]
+
+---
+
+## Arduino Sketch
+
+File: `src/arduino/hcsr04_tof_distance.ino`
+
+Outputs both TOF (microseconds) and distance (cm) per reading:
+```
+TOF:1170.0,DIST:20.0
+```
+
+TOF is the raw ECHO pin pulse width in microseconds — the round trip travel time of the ultrasound burst. Distance is derived as:
+```
+distance_cm = TOF_us / 58.0
+```
+
+---
+
+## Python Reader
+
+```python
+import serial
+import time
+
+ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
+time.sleep(2)
+
+while True:
+    line = ser.readline().decode().strip()
+    if ',' in line and 'TOF:' in line:
+        parts = line.split(',')
+        tof  = float(parts[0].replace('TOF:', ''))
+        dist = float(parts[1].replace('DIST:', ''))
+        if tof > 0:
+            print(f'TOF: {tof:.1f} us   DIST: {dist:.1f} cm')
+```
+
+---
+
+## Experiment 1 — TOF vs Angle at Fixed Distance
+
+**Method:**  
+Hold sensor at fixed standoff distance. Rotate to known angles and record TOF.
+
+**Surface:** [FILL IN]  
+**Standoff distance:** [FILL IN] cm  
+**Samples per angle:** 20
+
+| Angle (°) | TOF mean (µs) | TOF std (µs) | DIST mean (cm) | Notes |
+|---|---|---|---|---|
+| 0 (perpendicular) | [FILL IN] | [FILL IN] | [FILL IN] | baseline |
+| 5 | [FILL IN] | [FILL IN] | [FILL IN] | |
+| 10 | [FILL IN] | [FILL IN] | [FILL IN] | |
+| 15 | [FILL IN] | [FILL IN] | [FILL IN] | |
+| 20 | [FILL IN] | [FILL IN] | [FILL IN] | |
+| 30 | [FILL IN] | [FILL IN] | [FILL IN] | |
+| 45 | [FILL IN] | [FILL IN] | [FILL IN] | |
+
+**Key finding:** [FILL IN — e.g. TOF increased by X% at 20°]
+
+---
+
+## Experiment 2 — TOF Stability at Perpendicular
+
+**Method:**  
+Hold sensor perpendicular and stationary. Record 50 consecutive readings.
+
+**Purpose:** Establish baseline noise floor for TOF signal.
+
+| Metric | Value |
+|---|---|
+| Mean TOF (µs) | [FILL IN] |
+| Std TOF (µs) | [FILL IN] |
+| Min TOF (µs) | [FILL IN] |
+| Max TOF (µs) | [FILL IN] |
+| Noise floor (µs) | [FILL IN] |
+
+**Conclusion:** [FILL IN — e.g. ±X µs noise, minimum detectable angle change = Y°]
+
+---
+
+## Experiment 3 — TOF vs Distance at Perpendicular
+
+**Method:**  
+Keep sensor perpendicular. Move to different standoff distances and record TOF.
+
+**Purpose:** Confirm TOF scales linearly with distance (sanity check).
+
+| Distance (cm) | TOF mean (µs) | Expected TOF (µs) | Error (µs) |
+|---|---|---|---|
+| 5 | [FILL IN] | 290 | [FILL IN] |
+| 10 | [FILL IN] | 580 | [FILL IN] |
+| 15 | [FILL IN] | 870 | [FILL IN] |
+| 20 | [FILL IN] | 1160 | [FILL IN] |
+| 25 | [FILL IN] | 1450 | [FILL IN] |
+| 30 | [FILL IN] | 1740 | [FILL IN] |
+
+Expected TOF calculated as: `distance_cm × 58.0`
+
+---
+
+## Key Observations
+
+[FILL IN after running experiments — example format below]
+
+```
+1. At 0° (perpendicular): TOF = XXX µs, stable within ±X µs
+2. At 10°: TOF increased by X% to XXX µs
+3. At 20°: TOF increased by X% to XXX µs
+4. Signal lost (no echo) at approximately X° angle
+5. TOF signal is [more/less] sensitive than expected at small angles
+```
+
+---
+
+## Implications for Arm Control
+
+| Signal | Used for | Phase |
+|---|---|---|
+| DIST (cm) | Z height correction | Phase 2 ✅ |
+| TOF (µs) | Perpendicularity feedback | Phase 5 ⏳ |
+| TOF minimum | Indicates perpendicular alignment | Phase 5 ⏳ |
+| TOF trend | Guides forearm_roll correction direction | Phase 5 ⏳ |
+
+**Control strategy for Phase 5:**
+```
+At each waypoint:
+1. Read TOF
+2. Nudge forearm_roll by small delta (+/-)
+3. Re-read TOF
+4. If TOF decreased → continue in same direction
+5. If TOF increased → reverse direction
+6. Stop when TOF is minimised → perpendicular achieved
+```
+
+This is a simple hill-climbing (gradient descent) search on the TOF signal.
+
+---
+
+## Limitations of HC-SR04 for Perpendicularity
+
+| Limitation | Impact |
+|---|---|
+| 40kHz operating frequency | Lower sensitivity than 60kHz transducer |
+| Wide beam angle (~15°) | Reduces angular resolution |
+| No amplitude output | Can only use TOF, not amplitude |
+| ±3mm distance accuracy | Limits minimum detectable angle |
+
+**Planned upgrade:** 60kHz air-coupled ultrasonic transducer which provides both TOF and amplitude, narrower beam, higher sensitivity.
+
+---
+
+## Video
+
+[FILL IN — YouTube unlisted link once recorded]
+
+**What the video shows:**
+- Live TOF and distance readings in terminal
+- Sensor tilted at different angles — TOF visibly changes
+- Perpendicular position showing minimum TOF
